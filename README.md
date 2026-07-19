@@ -6,6 +6,12 @@ It reads the same data the `/usage` command uses. No separate login, no API key:
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+<p align="center">
+  <img src="docs/images/menubar-dark.png" alt="Pulse macOS menu bar app: a compact 5h/weekly gauge in the menu bar with a details dropdown showing usage, reset times, and the current model" width="640" />
+</p>
+
+<p align="center"><em>The macOS menu bar app — a compact <code>5h / weekly %</code> gauge, with a dropdown for reset times and the current model. The gauge turns orange, then red, as usage climbs.</em></p>
+
 ## Implementations
 
 The same core logic, ported to three platform UIs:
@@ -18,13 +24,6 @@ The same core logic, ported to three platform UIs:
 
 `src/` is the reference implementation; `tray-go/` and `menubar/` are hand-ports of the same four-module design. See the README in each folder for platform-specific details:
 [`menubar/README.md`](menubar/README.md) · [`tray-go/README.md`](tray-go/README.md)
-
-<p>
-  <img src="docs/images/menubar-preview.png" alt="macOS menu bar rendering (5h / weekly %)" height="44" align="middle" />
-  &nbsp;
-  <img src="docs/images/tray-icon.png" alt="system tray icon" height="32" align="middle" />
-  &nbsp;— menu bar / tray previews (rendered with <code>--render</code>)
-</p>
 
 ## What it shows
 
@@ -95,6 +94,14 @@ cd menubar
 ```
 
 Requires macOS 13+ and Xcode command-line tools. Font size, line gap, and interval are tunable via `defaults write xyz.agle.pulse …`. Details: [`menubar/README.md`](menubar/README.md), signing/notarization: [`menubar/docs/RELEASE.md`](menubar/docs/RELEASE.md).
+
+The menu bar item and dropdown follow the system light/dark theme:
+
+<p align="center">
+  <img src="docs/images/menubar-light.png" alt="Pulse menu bar dropdown in light mode showing 41% 5h and 80% weekly usage" width="420" />
+  &nbsp;
+  <img src="docs/images/menubar-dark.png" alt="Pulse menu bar dropdown in dark mode showing 94% 5h and 95% weekly usage" width="420" />
+</p>
 
 ## Development
 
