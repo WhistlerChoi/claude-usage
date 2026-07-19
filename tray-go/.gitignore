@@ -1,0 +1,7 @@
+# Compiled binaries
+Pulse.exe
+*.exe
+cu-mac
+
+# macOS
+.DS_Store

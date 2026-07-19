@@ -1,0 +1,21 @@
+# Dependencies / build output
+node_modules/
+dist/
+*.vsix
+
+# Go tray (tray-go/) artifacts
+tray-go/pulse-tray
+tray-go/claude-usage-tray
+tray-go/Pulse.exe
+tray-go/ClaudeUsage.exe
+
+# Swift menu bar (menubar/) artifacts
+menubar/.build/
+menubar/*.app
+menubar/*.dmg
+
+# Local Claude Code settings (per-user)
+.claude/settings.local.json
+
+# macOS
+.DS_Store
