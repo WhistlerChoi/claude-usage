@@ -1,4 +1,4 @@
-import { readAccessToken } from "./credentials";
+import { defaultCache, type CredentialCache } from "./credentialCache";
 
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 
@@ -67,10 +67,7 @@ export function parseUsage(json: unknown): UsageData {
   };
 }
 
-/** Call the usage endpoint to fetch current usage. */
-export async function fetchUsage(): Promise<UsageData> {
-  const token = await readAccessToken();
-
+async function requestUsage(token: string): Promise<{ status: number; data?: UsageData }> {
   const res = await fetch(USAGE_URL, {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -79,7 +76,7 @@ export async function fetchUsage(): Promise<UsageData> {
   });
 
   if (res.status === 401 || res.status === 403) {
-    throw new AuthError("Authentication expired. Log in again.");
+    return { status: res.status };
   }
   if (res.status === 429) {
     throw new TransientError(
@@ -91,6 +88,36 @@ export async function fetchUsage(): Promise<UsageData> {
     throw new TransientError(`usage API error: HTTP ${res.status}`);
   }
 
-  const json = await res.json();
-  return parseUsage(json);
+  return { status: res.status, data: parseUsage(await res.json()) };
+}
+
+/**
+ * Call the usage endpoint to fetch current usage.
+ * On 401/403 the cached token is invalidated and, if the credential store
+ * already holds a different token (Claude Code rotated it), the request is
+ * retried exactly once. Strictly read-only: never refreshes or writes tokens.
+ */
+export async function fetchUsage(force = false, cache: CredentialCache = defaultCache): Promise<UsageData> {
+  const token = await cache.getToken(force);
+  const first = await requestUsage(token);
+  if (first.data) {
+    return first.data;
+  }
+
+  cache.invalidate();
+  let retryToken: string;
+  try {
+    retryToken = await cache.getToken();
+  } catch {
+    throw new AuthError("Authentication expired. Log in again.");
+  }
+  if (retryToken === token) {
+    throw new AuthError("Authentication expired. Log in again.");
+  }
+  const second = await requestUsage(retryToken);
+  if (second.data) {
+    return second.data;
+  }
+  cache.invalidate();
+  throw new AuthError("Authentication expired. Log in again.");
 }

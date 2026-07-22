@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-var errAuth = errors.New("authentication expired")
+var errAuth = errors.New("Authentication expired. Log in again.")
 
 // transientError: a retryable error (network/5xx/429 etc.). retryAfter is the 429 Retry-After (seconds).
 type transientError struct {
@@ -49,11 +49,33 @@ type usageResp struct {
 	SevenDaySonnet *window `json:"seven_day_sonnet"`
 }
 
-func fetchUsage() (*usageResp, error) {
-	token, err := readAccessToken()
+// fetchUsage fetches current usage. On 401/403 the cached token is
+// invalidated and, if the credential store already holds a different token
+// (Claude Code rotated it), the request is retried exactly once.
+// Strictly read-only: never refreshes or writes tokens.
+func fetchUsage(cache *credCache, force bool) (*usageResp, error) {
+	token, err := cache.Get(force)
 	if err != nil {
 		return nil, err
 	}
+	u, err := requestUsage(token)
+	if !errors.Is(err, errAuth) {
+		return u, err
+	}
+
+	cache.Invalidate()
+	retryToken, err := cache.Get(false)
+	if err != nil || retryToken == token {
+		return nil, errAuth
+	}
+	u, err = requestUsage(retryToken)
+	if errors.Is(err, errAuth) {
+		cache.Invalidate()
+	}
+	return u, err
+}
+
+func requestUsage(token string) (*usageResp, error) {
 	req, _ := http.NewRequest("GET", "https://api.anthropic.com/api/oauth/usage", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")

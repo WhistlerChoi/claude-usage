@@ -32,7 +32,7 @@ function scheduleNext(delayMs: number): void {
   timer = setTimeout(() => void refresh(), delayMs);
 }
 
-async function refresh(): Promise<void> {
+async function refresh(force = false): Promise<void> {
   if (inFlight) {
     return;
   }
@@ -41,7 +41,7 @@ async function refresh(): Promise<void> {
   let nextDelayMs = intervalMs;
   try {
     const [usage, model] = await Promise.all([
-      fetchUsage(),
+      fetchUsage(force),
       readCurrentModel().catch(() => null),
     ]);
     lastUsage = usage;
@@ -85,7 +85,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!inFlight) {
         statusBar.showLoading();
       }
-      void refresh();
+      void refresh(true);
     })
   );
 
