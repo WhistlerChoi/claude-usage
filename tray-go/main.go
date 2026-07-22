@@ -20,6 +20,7 @@ var (
 	lastSuccessAt       time.Time
 	consecutiveFailures int
 	manualRefresh       = make(chan struct{}, 1)
+	cache               = newCredCache()
 )
 
 const (
@@ -82,13 +83,15 @@ func pollLoop() {
 	}
 	intervalDur := time.Duration(interval) * time.Second
 
-	delay := refresh(intervalDur)
+	delay := refresh(intervalDur, false)
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	for {
+		force := false
 		select {
 		case <-timer.C:
 		case <-manualRefresh:
+			force = true
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
@@ -96,14 +99,14 @@ func pollLoop() {
 				}
 			}
 		}
-		timer.Reset(refresh(intervalDur))
+		timer.Reset(refresh(intervalDur, force))
 	}
 }
 
-func refresh(interval time.Duration) time.Duration {
-	usage, err := fetchUsage()
+func refresh(interval time.Duration, force bool) time.Duration {
+	usage, err := fetchUsage(cache, force)
 	if err != nil {
-		if errors.Is(err, errAuth) || errors.Is(err, errNoCreds) {
+		if errors.Is(err, errAuth) || errors.Is(err, errNoCreds) || errors.Is(err, errKeychainDenied) {
 			applyError(err.Error())
 			consecutiveFailures = 0
 			return interval

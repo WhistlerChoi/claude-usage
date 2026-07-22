@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -25,11 +25,14 @@ export function extractAccessToken(raw: string): string {
   return token;
 }
 
+function credentialsFilePath(): string {
+  return join(homedir(), ".claude", ".credentials.json");
+}
+
 /** Read credentials from the common file path (Windows/Linux/macOS). Returns null if absent. */
 async function readFromFile(): Promise<string | null> {
-  const path = join(homedir(), ".claude", ".credentials.json");
   try {
-    return await readFile(path, "utf8");
+    return await readFile(credentialsFilePath(), "utf8");
   } catch {
     return null;
   }
@@ -53,11 +56,53 @@ async function readFromKeychain(): Promise<string | null> {
   }
 }
 
+/** Capture the raw "mdat" (modification date) line from `security find-generic-password` attribute output. */
+export function extractKeychainMdat(output: string): string | null {
+  const match = output.match(/"mdat"<timedate>=(.+)/);
+  return match ? match[1].trim() : null;
+}
+
+async function readFileFingerprint(): Promise<string | null> {
+  try {
+    const s = await stat(credentialsFilePath());
+    return `file:${s.mtimeMs}`;
+  } catch {
+    return null;
+  }
+}
+
+async function readKeychainFingerprint(): Promise<string | null> {
+  if (process.platform !== "darwin") {
+    return null;
+  }
+  try {
+    // No -w: attribute-only read, never triggers a keychain ACL prompt.
+    const { stdout } = await execFileAsync("security", [
+      "find-generic-password",
+      "-s",
+      KEYCHAIN_SERVICE,
+    ]);
+    const mdat = extractKeychainMdat(stdout);
+    return mdat ? `keychain:${mdat}` : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Read Claude Code's OAuth accessToken.
+ * Prompt-free change fingerprint of the credential store: file mtime if the
+ * credentials file exists, otherwise the keychain item's mdat attribute.
+ * null means no credentials are present. The source prefix makes a
+ * file<->keychain transition register as a change.
+ */
+export async function readFingerprint(): Promise<string | null> {
+  return (await readFileFingerprint()) ?? (await readKeychainFingerprint());
+}
+
+/**
+ * Read Claude Code's OAuth accessToken (the secret read — may prompt on macOS).
  * - First ~/.claude/.credentials.json (default on Windows/Linux, and used on macOS if present)
  * - Otherwise the macOS keychain
- * Claude Code refreshes the token periodically, so re-reading every poll handles expiry automatically.
  */
 export async function readAccessToken(): Promise<string> {
   const fileRaw = await readFromFile();

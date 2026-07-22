@@ -34,14 +34,22 @@ The same core logic, ported to three platform UIs:
 
 ## How it works
 
-1. **Credentials** — reads the OAuth access token Claude Code already stores locally:
+1. **Credentials** — reads the OAuth access token Claude Code already stores locally, **strictly read-only** (Pulse never refreshes or writes Claude Code's credentials):
    - Windows / Linux: `~/.claude/.credentials.json`
    - macOS: the file above if present, otherwise the keychain item `Claude Code-credentials`
 
-   The token is re-read on every poll, so Claude Code's automatic token refresh is picked up without any action on your part.
+   The token is cached in memory. Each poll only checks a change fingerprint (file mtime / keychain modification date — a metadata read that never triggers a keychain prompt); the secret itself is re-read only when Claude Code actually rotates the token or the API rejects the cached one.
 2. **Usage API** — calls the same endpoint the `/usage` command uses: `GET https://api.anthropic.com/api/oauth/usage`. The response contains utilization and reset time for the 5-hour, weekly, weekly-Opus, and weekly-Sonnet windows.
 3. **Current model** (best-effort) — reads the `model` field from the last line of your most recent session transcript under `~/.claude/projects/`. Only that one field is read; conversation content is never parsed.
 4. **Formatting** — pure functions turn that into the status text, tooltip, and "resets in 1h 50m" strings. This is where the unit tests live.
+
+### macOS keychain prompts
+
+On macOS, Claude Code stores its credentials only in the keychain, and that item is protected by an ACL owned by Claude Code — so the **first** time Pulse reads the token after a launch or after Claude Code rotates it, macOS shows a "wants to access key … in your keychain" prompt. Click **Allow** (with an ad-hoc-signed build, "Always Allow" does not persist across rebuilds). Thanks to the fingerprint cache this is bounded: expect roughly one prompt per app launch/reboot plus one per token rotation — never one per poll.
+
+If you deny the prompt, Pulse shows "Keychain access denied. Use Refresh Now to try again." and stops touching the keychain until you use **Refresh Now** or the credentials change.
+
+To avoid keychain prompts entirely, you can provide a token directly via the `CLAUDE_USAGE_TOKEN` environment variable (for example a long-lived token from `claude setup-token`). When set, Pulse uses it as-is and never reads Claude Code's credential stores.
 
 ### Privacy
 

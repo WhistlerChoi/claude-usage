@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var consecutiveFailures = 0
     private var inFlight = false
     private var aboutWindow: NSWindow?
+    private let cache = CredentialCache()
 
     // Two-line display fine-tuning (adjustable via env vars, no rebuild needed)
     private let fontSize: CGFloat       // CLAUDE_USAGE_FONT_SIZE (default 9)
@@ -46,12 +47,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func refresh() {
+        refresh(force: false)
+    }
+
+    /// Manual "Refresh Now": may retry a previously denied/rejected credential read.
+    @objc func refreshForced() {
+        refresh(force: true)
+    }
+
+    private func refresh(force: Bool) {
         if inFlight { return }
         inFlight = true
         Task.detached { [weak self] in
             guard let self else { return }
             do {
-                let usage = try await fetchUsageAutoRefreshing()
+                let usage = try await fetchUsageCached(cache: self.cache, force: force)
                 let model = readCurrentModel()
                 await MainActor.run {
                     self.inFlight = false
@@ -396,7 +406,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let aboutItem = NSMenuItem(title: "About", action: #selector(showAbout), keyEquivalent: "")
         aboutItem.target = self
         menu.addItem(aboutItem)
-        let refreshItem = NSMenuItem(title: "Refresh Now", action: #selector(refresh), keyEquivalent: "r")
+        let refreshItem = NSMenuItem(title: "Refresh Now", action: #selector(refreshForced), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
@@ -520,7 +530,7 @@ if let idx = CommandLine.arguments.firstIndex(of: "--render") {
     exit(0)
 }
 
-// --selftest: exercise the pure refresh/merge helpers (no network, no keychain), then exit.
+// --selftest: exercise the CredentialCache state machine (no network, no keychain), then exit.
 if CommandLine.arguments.contains("--selftest") {
     var failures = 0
     func check(_ cond: Bool, _ label: String) {
@@ -528,45 +538,93 @@ if CommandLine.arguments.contains("--selftest") {
         if !cond { failures += 1 }
     }
 
-    // parseRefreshResponse: rotated refresh token + computed expiry.
-    let resp = #"{"access_token":"newA","refresh_token":"newR","expires_in":28800}"#.data(using: .utf8)!
-    if let t = try? parseRefreshResponse(resp, previousRefreshToken: "oldR", nowMs: 1_000_000) {
-        check(t.accessToken == "newA", "parseRefreshResponse access token")
-        check(t.refreshToken == "newR", "parseRefreshResponse rotated refresh token")
-        check(t.expiresAtMs == 1_000_000 + 28_800 * 1000, "parseRefreshResponse expiry = now + expires_in*1000")
-    } else {
-        check(false, "parseRefreshResponse parsed")
+    final class FakeStore {
+        var fp: String?
+        var secret = "tok-1"
+        var secretFails = false
+        var fpReads = 0
+        var secretReads = 0
+        init(fp: String?) { self.fp = fp }
+        func cache(env: String? = nil) -> CredentialCache {
+            CredentialCache(
+                envToken: { env },
+                readFingerprintFn: { self.fpReads += 1; return self.fp },
+                readSecretFn: {
+                    self.secretReads += 1
+                    if self.secretFails {
+                        throw CredentialsError.notFound("Could not read credentials. Log in with Claude Code.")
+                    }
+                    return self.secret
+                })
+        }
     }
 
-    // parseRefreshResponse: missing refresh_token carries the previous one forward.
-    let respNoRefresh = #"{"access_token":"a2","expires_in":3600}"#.data(using: .utf8)!
-    if let t = try? parseRefreshResponse(respNoRefresh, previousRefreshToken: "keepR", nowMs: 0) {
-        check(t.refreshToken == "keepR", "parseRefreshResponse falls back to previous refresh token")
-    } else {
-        check(false, "parseRefreshResponse (no refresh_token) parsed")
-    }
+    // Steady state: unchanged fingerprint reads the secret exactly once.
+    let s1 = FakeStore(fp: "keychain:A")
+    let c1 = s1.cache()
+    check((try? c1.getToken()) == "tok-1", "initial read returns token")
+    check((try? c1.getToken()) == "tok-1", "second read returns cached token")
+    check((try? c1.getToken()) == "tok-1", "third read returns cached token")
+    check(s1.secretReads == 1, "steady state: exactly one secret read")
+    check(s1.fpReads == 3, "steady state: fingerprint checked every call")
 
-    // mergedCredentialsData: preserves unrelated fields + wrapper shape, updates the three token fields.
-    let existing = #"{"claudeAiOauth":{"accessToken":"old","refreshToken":"oldR","expiresAt":1,"scopes":["x"],"subscriptionType":"pro"}}"#.data(using: .utf8)!
-    if let merged = try? mergedCredentialsData(existing: existing, accessToken: "A", refreshToken: "R", expiresAtMs: 1782033795750),
-       let obj = (try? JSONSerialization.jsonObject(with: merged)) as? [String: Any],
-       let oauth = obj["claudeAiOauth"] as? [String: Any] {
-        check(oauth["accessToken"] as? String == "A", "merge updates accessToken")
-        check(oauth["refreshToken"] as? String == "R", "merge updates refreshToken")
-        check((oauth["expiresAt"] as? NSNumber)?.int64Value == 1782033795750, "merge writes integer expiresAt")
-        check(oauth["scopes"] != nil, "merge preserves scopes")
-        check(oauth["subscriptionType"] as? String == "pro", "merge preserves subscriptionType")
-    } else {
-        check(false, "mergedCredentialsData (wrapper) produced valid JSON")
-    }
+    // Fingerprint change triggers exactly one re-read.
+    s1.fp = "keychain:B"
+    s1.secret = "tok-2"
+    check((try? c1.getToken()) == "tok-2", "fingerprint change picks up new token")
+    check(s1.secretReads == 2, "fingerprint change: one extra secret read")
 
-    // mergedCredentialsData: empty input defaults to Claude Code's wrapper shape.
-    if let merged = try? mergedCredentialsData(existing: nil, accessToken: "A", refreshToken: "R", expiresAtMs: 2),
-       let obj = (try? JSONSerialization.jsonObject(with: merged)) as? [String: Any] {
-        check(obj["claudeAiOauth"] is [String: Any], "merge with no existing data uses wrapper shape")
-    } else {
-        check(false, "mergedCredentialsData (empty) produced valid JSON")
-    }
+    // invalidate + unchanged fingerprint: throws without touching the secret.
+    c1.invalidate()
+    check((try? c1.getToken()) == nil, "invalidated + unchanged fingerprint throws")
+    check((try? c1.getToken()) == nil, "still throws on later polls")
+    check(s1.secretReads == 2, "invalidated: secret untouched")
+
+    // invalidate + changed fingerprint: re-reads.
+    s1.fp = "keychain:C"
+    s1.secret = "tok-3"
+    check((try? c1.getToken()) == "tok-3", "rotation after invalidate recovers")
+
+    // Denied read: no further secret reads until force.
+    let s2 = FakeStore(fp: "keychain:A")
+    s2.secretFails = true
+    let c2 = s2.cache()
+    var deniedMessage: String?
+    do { _ = try c2.getToken() } catch { deniedMessage = error.localizedDescription }
+    check(deniedMessage == "Keychain access denied. Use Refresh Now to try again.", "denied read message")
+    _ = try? c2.getToken()
+    _ = try? c2.getToken()
+    check(s2.secretReads == 1, "denied: exactly one secret read across polls")
+    s2.secretFails = false
+    check((try? c2.getToken(force: true)) == "tok-1", "force retries a denied read")
+
+    // Force does not bypass a healthy cache.
+    check((try? c2.getToken(force: true)) == "tok-1", "force on healthy cache returns cached token")
+    check(s2.secretReads == 2, "force on healthy cache: no extra secret read")
+
+    // nil fingerprint: login-needed with zero secret reads; auto-recovers when creds appear.
+    let s3 = FakeStore(fp: nil)
+    let c3 = s3.cache()
+    var loginMessage: String?
+    do { _ = try c3.getToken() } catch { loginMessage = error.localizedDescription }
+    check(loginMessage == "Could not read credentials. Log in with Claude Code.", "no creds message")
+    check(s3.secretReads == 0, "no creds: secret never touched")
+    s3.fp = "keychain:A"
+    check((try? c3.getToken()) == "tok-1", "auto-recovery when creds appear")
+
+    // file<->keychain source transition counts as a change.
+    let s4 = FakeStore(fp: "file:1000")
+    let c4 = s4.cache()
+    _ = try? c4.getToken()
+    s4.fp = "keychain:1000"
+    s4.secret = "tok-kc"
+    check((try? c4.getToken()) == "tok-kc", "source transition re-reads")
+
+    // Env token bypasses the source entirely.
+    let s5 = FakeStore(fp: "keychain:A")
+    let c5 = s5.cache(env: "tok-env")
+    check((try? c5.getToken()) == "tok-env", "env token wins")
+    check(s5.fpReads == 0 && s5.secretReads == 0, "env token: source untouched")
 
     print(failures == 0 ? "ALL PASS" : "\(failures) FAILURE(S)")
     exit(failures == 0 ? 0 : 1)
@@ -577,7 +635,7 @@ if CommandLine.arguments.contains("--once") {
     let sema = DispatchSemaphore(value: 0)
     Task {
         do {
-            let usage = try await fetchUsageAutoRefreshing()
+            let usage = try await fetchUsageCached(cache: CredentialCache())
             let model = readCurrentModel()
             print("[gauge] " + menuBarText(usage))
             print("  5h:     \(pct(usage.fiveHour.utilization))% · \(formatResetIn(usage.fiveHour.resetsAt))")
