@@ -15,11 +15,10 @@ mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
 cp ".build/release/$BIN_NAME" "$APP/Contents/MacOS/$BIN_NAME"
 
-# Copy the resource bundle SwiftPM generated (About header PNG, etc.) so Bundle.module can find it.
-RES_BUNDLE=".build/release/${BIN_NAME}_${BIN_NAME}.bundle"
-if [ -d "$RES_BUNDLE" ]; then
-  cp -R "$RES_BUNDLE" "$APP/Contents/Resources/"
-fi
+# About header image — copied to the standard app Resources location so Bundle.main finds it.
+# (Do NOT rely on the SwiftPM-generated resource bundle / Bundle.module: its accessor traps
+# when the bundle isn't at its expected path, crashing the app on other machines.)
+cp "Sources/Pulse/Resources/header.png" "$APP/Contents/Resources/header.png"
 
 # App icon (gauge glyph matching the About header). Regenerate from make-icon.swift if missing.
 if [ ! -f "AppIcon.icns" ]; then
@@ -36,8 +35,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>Pulse</string>
   <key>CFBundleDisplayName</key><string>Pulse</string>
   <key>CFBundleIdentifier</key><string>xyz.agle.pulse</string>
-  <key>CFBundleVersion</key><string>1.0.1</string>
-  <key>CFBundleShortVersionString</key><string>1.0.1</string>
+  <key>CFBundleVersion</key><string>1.0.2</string>
+  <key>CFBundleShortVersionString</key><string>1.0.2</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>$BIN_NAME</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
